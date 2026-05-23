@@ -129,22 +129,27 @@ function Index() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastInteract = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
-  const resumeAudioTimeRef = useRef(0);
   const resumeScrollTopRef = useRef(0);
+  const resumeTimestampRef = useRef(0);
   const lastAutoScrollTopRef = useRef<number | null>(null);
 
-  // Audio-synced auto scroll
   useEffect(() => {
     if (showIntro || muted) return;
     const audio = audioRef.current;
     if (!audio) return;
     audio.currentTime = 0;
     audio.play().catch(() => {});
-    const DURATION = 206;
+  }, [showIntro, muted]);
+
+  // Slow auto scroll that resumes from the user's manual position
+  useEffect(() => {
+    if (showIntro) return;
+    const AUTO_SCROLL_DURATION = 420;
+
     const captureResumePoint = () => {
       const max = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);
-      resumeAudioTimeRef.current = audio.currentTime;
       resumeScrollTopRef.current = Math.min(window.scrollY, max);
+      resumeTimestampRef.current = performance.now();
     };
 
     captureResumePoint();
@@ -173,13 +178,14 @@ function Index() {
     const loop = () => {
       const idleFor = Date.now() - lastInteract.current;
       if (lastInteract.current === 0 || idleFor > 3000) {
-        const max = document.documentElement.scrollHeight - window.innerHeight;
-        const anchorAudioTime = resumeAudioTimeRef.current;
+        const max = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);
         const anchorScrollTop = Math.min(resumeScrollTopRef.current, max);
-        const remainingTime = Math.max(DURATION - anchorAudioTime, 0.001);
-        const elapsedSinceAnchor = Math.max(audio.currentTime - anchorAudioTime, 0);
-        const progressSinceAnchor = Math.min(elapsedSinceAnchor / remainingTime, 1);
-        const targetTop = anchorScrollTop + (max - anchorScrollTop) * progressSinceAnchor;
+        const elapsedSinceAnchor = Math.max(
+          (performance.now() - resumeTimestampRef.current) / 1000,
+          0,
+        );
+        const scrollSpeed = max > 0 ? max / AUTO_SCROLL_DURATION : 0;
+        const targetTop = Math.min(anchorScrollTop + scrollSpeed * elapsedSinceAnchor, max);
 
         lastAutoScrollTopRef.current = targetTop;
         window.scrollTo({ top: targetTop, behavior: "auto" });
@@ -197,7 +203,7 @@ function Index() {
       window.removeEventListener("keydown", onInteract);
       window.removeEventListener("scroll", onScroll);
     };
-  }, [showIntro, muted]);
+  }, [showIntro]);
 
   const toggleMute = () => {
     const a = audioRef.current;
@@ -266,7 +272,7 @@ function Index() {
             para ti, con todo
           </p>
           <p className="mt-4 text-sm tracking-widest opacity-60" style={{ fontFamily: "var(--font-type)" }}>
-            ↓ scroll · activa la música con el corazón ↓
+            ↓ Activa la música con el corazón ↓
           </p>
         </div>
       </section>
@@ -559,7 +565,7 @@ function Index() {
         </button>
 
         <p className="mt-16 text-sm opacity-70" style={{ fontFamily: "var(--font-type)", color: "#FFF8F0" }}>
-          hecho con amor 🤍
+          hecho con amor para mi monita 💘
         </p>
       </section>
     </div>
