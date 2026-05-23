@@ -144,7 +144,7 @@ function Index() {
   // Slow auto scroll that resumes from the user's manual position
   useEffect(() => {
     if (showIntro) return;
-    const AUTO_SCROLL_DURATION = 420;
+    const AUTO_SCROLL_DURATION = 520;
 
     const captureResumePoint = () => {
       const max = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);
