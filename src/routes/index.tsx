@@ -122,6 +122,43 @@ function Polaroid({ src, label, rot, w = 280 }: { src: string; label: string; ro
   );
 }
 
+type ScrollSectionKey = "verse1" | "chorus1" | "verse2" | "bridge" | "chorus2";
+type ScrollMarker =
+  | "top"
+  | "verse1Start"
+  | "verse1End"
+  | "chorus1Start"
+  | "chorus1End"
+  | "verse2Start"
+  | "verse2End"
+  | "bridgeStart"
+  | "bridgeEnd"
+  | "chorus2Start"
+  | "chorus2End"
+  | "bottom";
+
+type ScrollSegment = {
+  duration: number;
+  from: ScrollMarker;
+  to: ScrollMarker;
+};
+
+const SONG_SCROLL_DURATION = 206;
+const AUTO_SCROLL_IDLE_MS = 3000;
+const SONG_SCROLL_SEGMENTS: ScrollSegment[] = [
+  { duration: 15, from: "top", to: "verse1Start" },
+  { duration: 38, from: "verse1Start", to: "verse1End" },
+  { duration: 3, from: "verse1End", to: "chorus1Start" },
+  { duration: 31, from: "chorus1Start", to: "chorus1End" },
+  { duration: 18, from: "chorus1End", to: "verse2Start" },
+  { duration: 19, from: "verse2Start", to: "verse2End" },
+  { duration: 3, from: "verse2End", to: "bridgeStart" },
+  { duration: 14, from: "bridgeStart", to: "bridgeEnd" },
+  { duration: 3, from: "bridgeEnd", to: "chorus2Start" },
+  { duration: 31, from: "chorus2Start", to: "chorus2End" },
+  { duration: SONG_SCROLL_DURATION - 175, from: "chorus2End", to: "bottom" },
+];
+
 // ---------- Main ----------
 function Index() {
   const [showIntro, setShowIntro] = useState(true);
@@ -129,9 +166,16 @@ function Index() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastInteract = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
-  const resumeScrollTopRef = useRef(0);
-  const resumeTimestampRef = useRef(0);
   const lastAutoScrollTopRef = useRef<number | null>(null);
+  const manualOffsetRef = useRef(0);
+  const manualOffsetStartTimeRef = useRef(0);
+  const sectionRefs = useRef<Record<ScrollSectionKey, HTMLElement | null>>({
+    verse1: null,
+    chorus1: null,
+    verse2: null,
+    bridge: null,
+    chorus2: null,
+  });
 
   useEffect(() => {
     if (showIntro || muted) return;
@@ -141,18 +185,91 @@ function Index() {
     audio.play().catch(() => {});
   }, [showIntro, muted]);
 
-  // Slow auto scroll that resumes from the user's manual position
+  // Follow the song with section-specific timings, while still respecting manual scroll pauses.
   useEffect(() => {
-    if (showIntro) return;
-    const AUTO_SCROLL_DURATION = 520;
+    if (showIntro || muted) return;
+    const audio = audioRef.current;
+    if (!audio) return;
 
-    const captureResumePoint = () => {
-      const max = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);
-      resumeScrollTopRef.current = Math.min(window.scrollY, max);
-      resumeTimestampRef.current = performance.now();
+    manualOffsetRef.current = 0;
+    manualOffsetStartTimeRef.current = 0;
+    lastInteract.current = 0;
+
+    const clamp = (value: number, min: number, max: number) =>
+      Math.min(Math.max(value, min), max);
+    const getMaxScroll = () =>
+      Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);
+    const getSectionRange = (key: ScrollSectionKey) => {
+      const section = sectionRefs.current[key];
+      const max = getMaxScroll();
+
+      if (!section) {
+        return { start: 0, end: 0 };
+      }
+
+      const start = Math.min(window.scrollY + section.getBoundingClientRect().top, max);
+      const readableDistance = Math.max(section.offsetHeight - window.innerHeight * 0.55, 180);
+      const end = Math.min(start + readableDistance, max);
+
+      return { start, end: Math.max(start, end) };
     };
+    const getMarkerPositions = (): Record<ScrollMarker, number> => {
+      const max = getMaxScroll();
+      const verse1 = getSectionRange("verse1");
+      const chorus1 = getSectionRange("chorus1");
+      const verse2 = getSectionRange("verse2");
+      const bridge = getSectionRange("bridge");
+      const chorus2 = getSectionRange("chorus2");
 
-    captureResumePoint();
+      return {
+        top: 0,
+        verse1Start: verse1.start,
+        verse1End: verse1.end,
+        chorus1Start: chorus1.start,
+        chorus1End: chorus1.end,
+        verse2Start: verse2.start,
+        verse2End: verse2.end,
+        bridgeStart: bridge.start,
+        bridgeEnd: bridge.end,
+        chorus2Start: chorus2.start,
+        chorus2End: chorus2.end,
+        bottom: max,
+      };
+    };
+    const getScheduledTop = (currentTime: number) => {
+      const markers = getMarkerPositions();
+      let elapsed = 0;
+
+      for (const segment of SONG_SCROLL_SEGMENTS) {
+        const segmentEnd = elapsed + segment.duration;
+        if (currentTime <= segmentEnd) {
+          const progress = clamp((currentTime - elapsed) / segment.duration, 0, 1);
+          return markers[segment.from] + (markers[segment.to] - markers[segment.from]) * progress;
+        }
+        elapsed = segmentEnd;
+      }
+
+      return markers.bottom;
+    };
+    const updateManualOffset = () => {
+      manualOffsetRef.current = window.scrollY - getScheduledTop(audio.currentTime);
+      manualOffsetStartTimeRef.current = audio.currentTime;
+    };
+    const getAdjustedTop = (currentTime: number) => {
+      const baseTop = getScheduledTop(currentTime);
+      const max = getMaxScroll();
+      const remainingSyncWindow = Math.max(
+        SONG_SCROLL_DURATION - manualOffsetStartTimeRef.current,
+        0.001,
+      );
+      const offsetElapsed = Math.max(currentTime - manualOffsetStartTimeRef.current, 0);
+      const offsetWeight =
+        manualOffsetRef.current === 0
+          ? 0
+          : 1 - clamp(offsetElapsed / remainingSyncWindow, 0, 1);
+
+      return clamp(baseTop + manualOffsetRef.current * offsetWeight, 0, max);
+    };
 
     const onInteract = () => {
       lastInteract.current = Date.now();
@@ -165,7 +282,7 @@ function Index() {
       }
 
       lastInteract.current = Date.now();
-      captureResumePoint();
+      updateManualOffset();
     };
 
     window.addEventListener("wheel", onInteract, { passive: true });
@@ -177,15 +294,8 @@ function Index() {
 
     const loop = () => {
       const idleFor = Date.now() - lastInteract.current;
-      if (lastInteract.current === 0 || idleFor > 3000) {
-        const max = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);
-        const anchorScrollTop = Math.min(resumeScrollTopRef.current, max);
-        const elapsedSinceAnchor = Math.max(
-          (performance.now() - resumeTimestampRef.current) / 1000,
-          0,
-        );
-        const scrollSpeed = max > 0 ? max / AUTO_SCROLL_DURATION : 0;
-        const targetTop = Math.min(anchorScrollTop + scrollSpeed * elapsedSinceAnchor, max);
+      if (lastInteract.current === 0 || idleFor > AUTO_SCROLL_IDLE_MS) {
+        const targetTop = getAdjustedTop(audio.currentTime);
 
         lastAutoScrollTopRef.current = targetTop;
         window.scrollTo({ top: targetTop, behavior: "auto" });
@@ -203,7 +313,7 @@ function Index() {
       window.removeEventListener("keydown", onInteract);
       window.removeEventListener("scroll", onScroll);
     };
-  }, [showIntro]);
+  }, [showIntro, muted]);
 
   const toggleMute = () => {
     const a = audioRef.current;
@@ -295,7 +405,12 @@ function Index() {
       <Torn color="#FFF8F0" />
 
       {/* ============ VERSE 1 ============ */}
-      <section className="relative py-24 px-6">
+      <section
+        ref={(node) => {
+          sectionRefs.current.verse1 = node;
+        }}
+        className="relative py-24 px-6"
+      >
         <StickerField items={[
           { src: "/assets/sticker-lips.png", top: "5%", left: "85%", size: 110, rot: 18 },
           { src: "/assets/sticker-monkey4.png", top: "75%", left: "2%", size: 130, rot: -14, delay: 1.5 },
@@ -323,7 +438,13 @@ function Index() {
       <Torn color="#C0192C" />
 
       {/* ============ CHORUS 1 ============ */}
-      <section className="relative py-24 px-6" style={{ background: "#C0192C" }}>
+      <section
+        ref={(node) => {
+          sectionRefs.current.chorus1 = node;
+        }}
+        className="relative py-24 px-6"
+        style={{ background: "#C0192C" }}
+      >
         <StickerField items={[
           { src: "/assets/sticker-heart.png", top: "10%", left: "8%", size: 100, rot: -16 },
           { src: "/assets/sticker-monkey5.png", top: "65%", left: "80%", size: 150, rot: 10, delay: 1 },
@@ -388,7 +509,12 @@ function Index() {
       <Torn color="#FFF8F0" />
 
       {/* ============ VERSE 2 ============ */}
-      <section className="relative py-24 px-6">
+      <section
+        ref={(node) => {
+          sectionRefs.current.verse2 = node;
+        }}
+        className="relative py-24 px-6"
+      >
         <StickerField items={[
           { src: "/assets/sticker-monkey1.png", top: "10%", left: "80%", size: 120, rot: 14 },
           { src: "/assets/news-heart.png", top: "70%", left: "5%", size: 100, rot: -12, delay: 1 },
@@ -414,7 +540,13 @@ function Index() {
       <Torn color="#F2B5C5" />
 
       {/* ============ BRIDGE ============ */}
-      <section className="relative py-24 px-6" style={{ background: "#F2B5C5" }}>
+      <section
+        ref={(node) => {
+          sectionRefs.current.bridge = node;
+        }}
+        className="relative py-24 px-6"
+        style={{ background: "#F2B5C5" }}
+      >
         <StickerField items={[
           { src: "/assets/sticker-monkey2.png", top: "10%", left: "78%", size: 140, rot: 14 },
           { src: "/assets/sticker-heart.png", top: "70%", left: "8%", size: 100, rot: -10 },
@@ -435,7 +567,13 @@ function Index() {
       <Torn color="#C0192C" />
 
       {/* ============ CHORUS 2 ============ */}
-      <section className="relative py-24 px-6" style={{ background: "#C0192C" }}>
+      <section
+        ref={(node) => {
+          sectionRefs.current.chorus2 = node;
+        }}
+        className="relative py-24 px-6"
+        style={{ background: "#C0192C" }}
+      >
         <StickerField items={[
           { src: "/assets/sticker-lips.png", top: "12%", left: "82%", size: 100, rot: 16 },
           { src: "/assets/sticker-monkey4.png", top: "65%", left: "5%", size: 140, rot: -12, delay: 1 },
