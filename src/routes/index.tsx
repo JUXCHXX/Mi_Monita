@@ -129,6 +129,9 @@ function Index() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastInteract = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
+  const resumeAudioTimeRef = useRef(0);
+  const resumeScrollTopRef = useRef(0);
+  const lastAutoScrollTopRef = useRef<number | null>(null);
 
   // Audio-synced auto scroll
   useEffect(() => {
@@ -138,22 +141,48 @@ function Index() {
     audio.currentTime = 0;
     audio.play().catch(() => {});
     const DURATION = 206;
+    const captureResumePoint = () => {
+      const max = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);
+      resumeAudioTimeRef.current = audio.currentTime;
+      resumeScrollTopRef.current = Math.min(window.scrollY, max);
+    };
+
+    captureResumePoint();
 
     const onInteract = () => {
       lastInteract.current = Date.now();
     };
+    const onScroll = () => {
+      const lastAutoTop = lastAutoScrollTopRef.current;
+      if (lastAutoTop !== null && Math.abs(window.scrollY - lastAutoTop) < 2) {
+        lastAutoScrollTopRef.current = null;
+        return;
+      }
+
+      lastInteract.current = Date.now();
+      captureResumePoint();
+    };
+
     window.addEventListener("wheel", onInteract, { passive: true });
     window.addEventListener("touchstart", onInteract, { passive: true });
+    window.addEventListener("touchmove", onInteract, { passive: true });
     window.addEventListener("mousedown", onInteract);
     window.addEventListener("keydown", onInteract);
+    window.addEventListener("scroll", onScroll, { passive: true });
 
     const loop = () => {
       const idleFor = Date.now() - lastInteract.current;
       if (lastInteract.current === 0 || idleFor > 3000) {
         const max = document.documentElement.scrollHeight - window.innerHeight;
-        const progress = Math.min(audio.currentTime / DURATION, 1);
-        const easedProgress = Math.pow(progress, 1.08);
-        window.scrollTo({ top: max * easedProgress, behavior: "auto" });
+        const anchorAudioTime = resumeAudioTimeRef.current;
+        const anchorScrollTop = Math.min(resumeScrollTopRef.current, max);
+        const remainingTime = Math.max(DURATION - anchorAudioTime, 0.001);
+        const elapsedSinceAnchor = Math.max(audio.currentTime - anchorAudioTime, 0);
+        const progressSinceAnchor = Math.min(elapsedSinceAnchor / remainingTime, 1);
+        const targetTop = anchorScrollTop + (max - anchorScrollTop) * progressSinceAnchor;
+
+        lastAutoScrollTopRef.current = targetTop;
+        window.scrollTo({ top: targetTop, behavior: "auto" });
       }
       rafRef.current = requestAnimationFrame(loop);
     };
@@ -163,8 +192,10 @@ function Index() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       window.removeEventListener("wheel", onInteract);
       window.removeEventListener("touchstart", onInteract);
+      window.removeEventListener("touchmove", onInteract);
       window.removeEventListener("mousedown", onInteract);
       window.removeEventListener("keydown", onInteract);
+      window.removeEventListener("scroll", onScroll);
     };
   }, [showIntro, muted]);
 
